@@ -14,5 +14,6 @@ using Mining = import "mining.capnp";
 interface Init $Proxy.wrap("interfaces::Init") {
     construct @0 (threadMap: Proxy.ThreadMap) -> (threadMap :Proxy.ThreadMap);
     makeEcho @1 (context :Proxy.Context) -> (result :Echo.Echo);
-    makeMining @2 (context :Proxy.Context) -> (result :Mining.Mining);
+    makeMiningOld2 @2 () -> ();
+    makeMining @3 (context :Proxy.Context) -> (result :Mining.Mining);
 }

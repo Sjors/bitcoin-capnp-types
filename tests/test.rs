@@ -97,3 +97,23 @@ async fn integration() {
         })
         .await;
 }
+
+/// Calling the deprecated makeMiningOld2 (@2) should return an error from the
+/// server. Cap'n Proto requires sequential ordinals so this placeholder cannot
+/// be removed, but the server intentionally rejects it.
+#[tokio::test]
+async fn make_mining_old2_rejected() {
+    let path = unix_socket_path();
+    let rpc_network = connect_unix_stream(path).await;
+    let rpc_system = RpcSystem::new(Box::new(rpc_network), None);
+    LocalSet::new()
+        .run_until(async move {
+            let (client, _thread) = bootstrap(rpc_system).await;
+            let result = client.make_mining_old2_request().send().promise.await;
+            assert!(
+                result.is_err(),
+                "makeMiningOld2 should be rejected by the server"
+            );
+        })
+        .await;
+}
