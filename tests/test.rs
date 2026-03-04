@@ -15,7 +15,14 @@ use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatE
 fn unix_socket_path() -> PathBuf {
     let home_dir_string = std::env::var("HOME").unwrap();
     let home_dir = home_dir_string.parse::<PathBuf>().unwrap();
-    let bitcoin_dir = home_dir.join(".bitcoin");
+    let bitcoin_dir = if cfg!(target_os = "macos") {
+        home_dir
+            .join("Library")
+            .join("Application Support")
+            .join("Bitcoin")
+    } else {
+        home_dir.join(".bitcoin")
+    };
     let regtest_dir = bitcoin_dir.join("regtest");
     regtest_dir.join("node.sock")
 }
