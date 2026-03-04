@@ -20,5 +20,5 @@ capnpc = "0.25.0"
 [dev-dependencies]
 capnp-rpc = "0.25.0"
 futures = "0.3.0"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util", "time"] }
 tokio-util = { version = "0.7.16", features = ["compat"] }

@@ -30,13 +30,27 @@ fn unix_socket_path() -> PathBuf {
 async fn connect_unix_stream(
     path: impl AsRef<Path>,
 ) -> VatNetwork<BufReader<Compat<OwnedReadHalf>>> {
-    let unix_stream = UnixStream::connect(path)
-        .await
-        .expect("unix socket connection failed. is Bitcoin Core running in Regtest?");
-    let (reader, writer) = unix_stream.into_split();
-    let buf_reader = futures::io::BufReader::new(reader.compat());
-    let buf_writer = futures::io::BufWriter::new(writer.compat_write());
-    VatNetwork::new(buf_reader, buf_writer, Side::Client, Default::default())
+    let path = path.as_ref();
+    let mut last_err = None;
+    for _ in 0..10 {
+        match UnixStream::connect(path).await {
+            Ok(stream) => {
+                let (reader, writer) = stream.into_split();
+                let buf_reader = futures::io::BufReader::new(reader.compat());
+                let buf_writer = futures::io::BufWriter::new(writer.compat_write());
+                return VatNetwork::new(buf_reader, buf_writer, Side::Client, Default::default());
+            }
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+    panic!(
+        "unix socket connection to {} failed after retries: {}. Is bitcoin running with -ipcbind=unix?",
+        path.display(),
+        last_err.unwrap()
+    );
 }
 
 /// Bootstrap an Init client, spawn the RPC system, and create a thread handle.
