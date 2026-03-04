@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use bitcoin_capnp_types::{
     init_capnp::init,
+    mining_capnp::{self, block_template, mining},
     proxy_capnp::{thread, thread_map},
 };
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp::Side, twoparty::VatNetwork};
@@ -128,6 +129,289 @@ async fn make_mining_old2_rejected() {
                 result.is_err(),
                 "makeMiningOld2 should be rejected by the server"
             );
+        })
+        .await;
+}
+
+/// Obtain a Mining client from an Init client.
+async fn make_mining(init: &init::Client, thread: &thread::Client) -> mining::Client {
+    let mut req = init.make_mining_request();
+    req.get().get_context().unwrap().set_thread(thread.clone());
+    let resp = req.send().promise.await.unwrap();
+    resp.get().unwrap().get_result().unwrap()
+}
+
+/// Create a new block template with default options and no cooldown.
+///
+/// The node must have height > 16. At height <= 16 the BIP34 height push
+/// is only one byte, which is shorter than the two-byte minimum scriptSig
+/// required by consensus (see `CheckTransaction`), causing `createNewBlock`
+/// to fail with `bad-cb-length`. Either generate blocks via bitcoin rpc
+/// (`generatetodescriptor`) before running these tests, or (in a real miner)
+/// pad the coinbase scriptSig with an extra push like `OP_0`.
+async fn make_block_template(
+    mining: &mining::Client,
+    thread: &thread::Client,
+) -> block_template::Client {
+    let mut req = mining.create_new_block_request();
+    req.get().get_context().unwrap().set_thread(thread.clone());
+    req.get().set_cooldown(false);
+    let resp = req.send().promise.await.unwrap();
+    resp.get().unwrap().get_result().unwrap()
+}
+
+/// Destroy a block template.
+async fn destroy_template(template: &block_template::Client, thread: &thread::Client) {
+    let mut req = template.destroy_request();
+    req.get().get_context().unwrap().set_thread(thread.clone());
+    req.send().promise.await.unwrap();
+}
+
+/// Check the four mining constants from the capnp schema.
+#[test]
+fn mining_constants() {
+    assert_eq!(mining_capnp::MAX_MONEY, 2_100_000_000_000_000i64);
+    const { assert!(mining_capnp::MAX_DOUBLE > 1e300) };
+    assert_eq!(mining_capnp::DEFAULT_BLOCK_RESERVED_WEIGHT, 8_000u32);
+    assert_eq!(
+        mining_capnp::DEFAULT_COINBASE_OUTPUT_MAX_ADDITIONAL_SIGOPS,
+        400u32
+    );
+}
+
+/// isTestChain, isInitialBlockDownload, getTip.
+#[tokio::test]
+async fn mining_basic_queries() {
+    let path = unix_socket_path();
+    let rpc_network = connect_unix_stream(path).await;
+    let rpc_system = RpcSystem::new(Box::new(rpc_network), None);
+    LocalSet::new()
+        .run_until(async move {
+            let (client, thread) = bootstrap(rpc_system).await;
+            let mining = make_mining(&client, &thread).await;
+
+            // isTestChain
+            let mut req = mining.is_test_chain_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            assert!(resp.get().unwrap().get_result(), "regtest is a test chain");
+
+            // isInitialBlockDownload
+            let mut req = mining.is_initial_block_download_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let _ibd: bool = resp.get().unwrap().get_result();
+
+            // getTip
+            let mut req = mining.get_tip_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let results = resp.get().unwrap();
+            assert!(results.get_has_result(), "node should have a tip");
+            let tip = results.get_result().unwrap();
+            let tip_hash = tip.get_hash().unwrap();
+            assert_eq!(tip_hash.len(), 32, "block hash must be 32 bytes");
+            assert!(tip.get_height() >= 0, "height must be non-negative");
+        })
+        .await;
+}
+
+/// waitTipChanged with a short timeout.
+#[tokio::test]
+async fn mining_wait_tip_changed() {
+    let path = unix_socket_path();
+    let rpc_network = connect_unix_stream(path).await;
+    let rpc_system = RpcSystem::new(Box::new(rpc_network), None);
+    LocalSet::new()
+        .run_until(async move {
+            let (client, thread) = bootstrap(rpc_system).await;
+            let mining = make_mining(&client, &thread).await;
+
+            // Get the current tip first.
+            let mut req = mining.get_tip_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let results = resp.get().unwrap();
+            let tip = results.get_result().unwrap();
+            let tip_hash: Vec<u8> = tip.get_hash().unwrap().to_vec();
+            let tip_height: i32 = tip.get_height();
+
+            // Wait with a short timeout; no new block should arrive.
+            let mut req = mining.wait_tip_changed_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            req.get().set_current_tip(&tip_hash);
+            req.get().set_timeout(500.0); // 500 ms
+            let resp = req.send().promise.await.unwrap();
+            let wait_result = resp.get().unwrap().get_result().unwrap();
+            assert_eq!(wait_result.get_hash().unwrap().len(), 32);
+            assert_eq!(wait_result.get_height(), tip_height);
+        })
+        .await;
+}
+
+/// createNewBlock + all BlockTemplate read methods: getBlockHeader, getBlock,
+/// getTxFees, getTxSigops, getCoinbaseTx, getCoinbaseMerklePath.
+#[tokio::test]
+async fn mining_block_template_inspection() {
+    let path = unix_socket_path();
+    let rpc_network = connect_unix_stream(path).await;
+    let rpc_system = RpcSystem::new(Box::new(rpc_network), None);
+    LocalSet::new()
+        .run_until(async move {
+            let (client, thread) = bootstrap(rpc_system).await;
+            let mining = make_mining(&client, &thread).await;
+            let template = make_block_template(&mining, &thread).await;
+
+            // getBlockHeader
+            let mut req = template.get_block_header_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let header = resp.get().unwrap().get_result().unwrap();
+            assert_eq!(header.len(), 80, "block header must be 80 bytes");
+
+            // getBlock
+            let mut req = template.get_block_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let block = resp.get().unwrap().get_result().unwrap();
+            assert!(block.len() > 80, "serialized block must be > 80 bytes");
+
+            // getTxFees
+            let mut req = template.get_tx_fees_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let _fees = resp.get().unwrap().get_result().unwrap();
+
+            // getTxSigops
+            let mut req = template.get_tx_sigops_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let _sigops = resp.get().unwrap().get_result().unwrap();
+
+            // getCoinbaseTx — inspect every CoinbaseTx field
+            let mut req = template.get_coinbase_tx_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let coinbase = resp.get().unwrap().get_result().unwrap();
+            let _version: u32 = coinbase.get_version();
+            let _sequence: u32 = coinbase.get_sequence();
+            let script_sig_prefix = coinbase.get_script_sig_prefix().unwrap();
+            assert!(
+                !script_sig_prefix.is_empty(),
+                "scriptSigPrefix must contain at least the block height"
+            );
+            let _witness = coinbase.get_witness().unwrap();
+            let reward: i64 = coinbase.get_block_reward_remaining();
+            assert!(reward > 0 && reward <= mining_capnp::MAX_MONEY);
+            let _required_outputs = coinbase.get_required_outputs().unwrap();
+            let _lock_time: u32 = coinbase.get_lock_time();
+
+            // getCoinbaseMerklePath
+            let mut req = template.get_coinbase_merkle_path_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            let resp = req.send().promise.await.unwrap();
+            let _merkle_path = resp.get().unwrap().get_result().unwrap();
+
+            destroy_template(&template, &thread).await;
+        })
+        .await;
+}
+
+/// waitNext (short timeout), interruptWait, submitSolution (garbage), destroy.
+#[tokio::test]
+async fn mining_block_template_lifecycle() {
+    let path = unix_socket_path();
+    let rpc_network = connect_unix_stream(path).await;
+    let rpc_system = RpcSystem::new(Box::new(rpc_network), None);
+    LocalSet::new()
+        .run_until(async move {
+            let (client, thread) = bootstrap(rpc_system).await;
+            let mining = make_mining(&client, &thread).await;
+            let template = make_block_template(&mining, &thread).await;
+
+            // waitNext — short timeout, no new transactions expected.
+            let mut req = template.wait_next_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            {
+                let mut opts = req.get().init_options();
+                opts.set_timeout(100.0); // 100 ms
+                opts.set_fee_threshold(mining_capnp::MAX_MONEY);
+            }
+            let resp = req.send().promise.await.unwrap();
+            let _has_next = resp.get().unwrap().has_result();
+
+            // interruptWait — should not crash.
+            template
+                .interrupt_wait_request()
+                .send()
+                .promise
+                .await
+                .unwrap();
+
+            // submitSolution — garbage coinbase should be rejected.
+            // This mutates the template, so we do it right before destroy.
+            let mut req = template.submit_solution_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            req.get().set_version(1);
+            req.get().set_timestamp(0);
+            req.get().set_nonce(0);
+            req.get().set_coinbase(&[0u8; 64]);
+            let resp = req.send().promise.await.unwrap();
+            let submitted = resp.get().unwrap().get_result();
+            assert!(!submitted, "garbage solution must not be accepted");
+
+            destroy_template(&template, &thread).await;
+        })
+        .await;
+}
+
+/// checkBlock with a template block payload, and interrupt.
+#[tokio::test]
+async fn mining_check_block_and_interrupt() {
+    let path = unix_socket_path();
+    let rpc_network = connect_unix_stream(path).await;
+    let rpc_system = RpcSystem::new(Box::new(rpc_network), None);
+    LocalSet::new()
+        .run_until(async move {
+            let (client, thread) = bootstrap(rpc_system).await;
+            let mining = make_mining(&client, &thread).await;
+            let template = make_block_template(&mining, &thread).await;
+
+            let mut get_block_req = template.get_block_request();
+            get_block_req
+                .get()
+                .get_context()
+                .unwrap()
+                .set_thread(thread.clone());
+            let get_block_resp = get_block_req.send().promise.await.unwrap();
+            let block = get_block_resp.get().unwrap().get_result().unwrap().to_vec();
+
+            // checkBlock should either error or return a response.
+            let mut req = mining.check_block_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            req.get().set_block(&block);
+            {
+                let mut opts = req.get().init_options();
+                opts.set_check_merkle_root(true);
+                opts.set_check_pow(false);
+            }
+            let result = req.send().promise.await;
+            match result {
+                Ok(resp) => {
+                    let results = resp.get().unwrap();
+                    let _valid: bool = results.get_result();
+                    let _reason = results.get_reason().unwrap();
+                    let _debug = results.get_debug().unwrap();
+                }
+                Err(_) => {
+                    // Server may reject validation/deserialization.
+                }
+            }
+
+            destroy_template(&template, &thread).await;
+
+            // interrupt — should not crash.
+            mining.interrupt_request().send().promise.await.unwrap();
         })
         .await;
 }
