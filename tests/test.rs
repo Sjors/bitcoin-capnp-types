@@ -1,4 +1,5 @@
 use bitcoin_capnp_types::{mining_capnp, proxy_capnp::thread};
+use encoding::encode_to_vec;
 
 mod util;
 
@@ -474,6 +475,100 @@ async fn mining_submit_block_duplicate() {
         assert_eq!(outcome.debug, "");
 
         destroy_template(&template, &thread).await;
+    })
+    .await;
+}
+
+/// getTransactionsByTxID and getTransactionsByWitnessID with empty lists and
+/// with a non-existent txid/wtxid.
+#[tokio::test]
+// Serialized because this test may mine blocks to recover wallet funding.
+#[serial_test::serial]
+async fn mining_get_transactions() {
+    with_mining_client(|_client, thread, mining| async move {
+        let wallet = bitcoin_test_wallet();
+        ensure_wallet_loaded_and_funded(&wallet);
+
+        let real_tx = create_mempool_self_transfer(&wallet);
+        let real_txid = real_tx.compute_txid().to_byte_array();
+        let real_wtxid = real_tx.compute_wtxid().to_byte_array();
+        let real_raw_tx = encode_to_vec(&real_tx);
+
+        // getTransactionsByTxID — empty list should return empty list.
+        let mut req = mining.get_transactions_by_tx_i_d_request();
+        req.get().get_context().unwrap().set_thread(thread.clone());
+        req.get().init_txids(0);
+        let resp = req.send().promise.await.unwrap();
+        let results = resp.get().unwrap().get_result().unwrap();
+        assert_eq!(
+            results.len(),
+            0,
+            "empty txid list should return empty results"
+        );
+
+        // getTransactionsByTxID — return real mempool tx and empty for unknown id.
+        let fake_txid = [0x42u8; 32];
+        let mut req = mining.get_transactions_by_tx_i_d_request();
+        req.get().get_context().unwrap().set_thread(thread.clone());
+        {
+            let mut txids = req.get().init_txids(2);
+            txids.set(0, &real_txid);
+            txids.set(1, &fake_txid);
+        }
+        let resp = req.send().promise.await.unwrap();
+        let results = resp.get().unwrap().get_result().unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "should return one entry per requested txid, including misses"
+        );
+        assert_eq!(
+            results.get(0).unwrap(),
+            real_raw_tx.as_slice(),
+            "known txid should return serialized transaction"
+        );
+        assert!(
+            results.get(1).unwrap().is_empty(),
+            "non-existent txid should return empty data"
+        );
+
+        // getTransactionsByWitnessID — empty list should return empty list.
+        let mut req = mining.get_transactions_by_witness_i_d_request();
+        req.get().get_context().unwrap().set_thread(thread.clone());
+        req.get().init_wtxids(0);
+        let resp = req.send().promise.await.unwrap();
+        let results = resp.get().unwrap().get_result().unwrap();
+        assert_eq!(
+            results.len(),
+            0,
+            "empty wtxid list should return empty results"
+        );
+
+        // getTransactionsByWitnessID — return real mempool tx and empty for unknown id.
+        let fake_wtxid = [0x43u8; 32];
+        let mut req = mining.get_transactions_by_witness_i_d_request();
+        req.get().get_context().unwrap().set_thread(thread.clone());
+        {
+            let mut wtxids = req.get().init_wtxids(2);
+            wtxids.set(0, &real_wtxid);
+            wtxids.set(1, &fake_wtxid);
+        }
+        let resp = req.send().promise.await.unwrap();
+        let results = resp.get().unwrap().get_result().unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "should return one entry per requested wtxid, including misses"
+        );
+        assert_eq!(
+            results.get(0).unwrap(),
+            real_raw_tx.as_slice(),
+            "known wtxid should return serialized transaction"
+        );
+        assert!(
+            results.get(1).unwrap().is_empty(),
+            "non-existent wtxid should return empty data"
+        );
     })
     .await;
 }
