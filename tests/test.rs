@@ -235,6 +235,39 @@ async fn mining_block_template_lifecycle() {
     .await;
 }
 
+/// submitBlock with a template block should be rejected (unsolved high-hash).
+#[tokio::test]
+#[serial_test::serial]
+async fn mining_submit_block() {
+    with_mining_client(|_client, thread, mining| async move {
+        let template = make_block_template(&mining, &thread).await;
+
+        let mut get_block_req = template.get_block_request();
+        get_block_req
+            .get()
+            .get_context()
+            .unwrap()
+            .set_thread(thread.clone());
+        let get_block_resp = get_block_req.send().promise.await.unwrap();
+        let block = get_block_resp.get().unwrap().get_result().unwrap().to_vec();
+
+        let mut req = mining.submit_block_request();
+        req.get().get_context().unwrap().set_thread(thread.clone());
+        req.get().set_block(&block);
+        let resp = req.send().promise.await.unwrap();
+        let results = resp.get().unwrap();
+        assert!(
+            !results.get_result(),
+            "unsolved template block must not be accepted"
+        );
+        let _reason = results.get_reason().unwrap();
+        let _debug = results.get_debug().unwrap();
+
+        destroy_template(&template, &thread).await;
+    })
+    .await;
+}
+
 /// checkBlock with a template block payload, and interrupt.
 #[tokio::test]
 // Serialized because interrupt() can affect other in-flight mining waits.
