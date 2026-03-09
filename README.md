@@ -37,7 +37,7 @@ fails with `bad-cb-length` because the BIP34 height push is too short for the
 coinbase scriptSig minimum.
 
 ```sh
-./build/bin/bitcoin rpc -regtest -rpcwait generatetodescriptor 101 "raw(51)"
+./build/bin/bitcoin rpc -chain=regtest -rpcwait generatetodescriptor 101 "raw(51)"
 ```
 
 ### 4. Run tests
@@ -49,7 +49,7 @@ cargo test
 ### 5. Stop bitcoin
 
 ```sh
-./build/bin/bitcoin rpc -regtest stop
+./build/bin/bitcoin rpc -chain=regtest stop
 ```
 
 ## License
