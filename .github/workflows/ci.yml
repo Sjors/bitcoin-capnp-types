@@ -21,7 +21,7 @@ jobs:
       - name: Checkout Bitcoin Core
         run: git clone --depth 1 --branch master https://github.com/bitcoin/bitcoin.git
       - name: Build Bitcoin Core
-        run: cd bitcoin && cmake -B build -DENABLE_WALLET=OFF -DBUILD_TESTS=OFF && cmake --build build -j 16
+        run: cd bitcoin && cmake -B build -DENABLE_WALLET=OFF -DBUILD_TESTS=OFF && cmake --build build -j $(nproc)
       - name: Run Bitcoin Core Daemon
         run: cd bitcoin && ./build/bin/bitcoin node -chain=regtest -ipcbind=unix -server -debug=ipc -daemon
       - name: Generate Blocks
