@@ -1,6 +1,26 @@
 ## Bitcoin Cap'n Proto Rust Client
 
-This project auto-generates the client code to interact with Bitcoin Core in Rust using interprocess communication. To build the code locally, you will need to have the [`capnp`](https://capnproto.org/install.html) compiler installed on your system.
+This project auto-generates the client code to interact with Bitcoin Core in Rust using interprocess communication.
+
+## Build prerequisites
+
+Building this crate requires the [`capnp`](https://capnproto.org/install.html)
+compiler.
+
+macOS:
+
+```sh
+brew install capnp
+```
+
+Debian / Ubuntu:
+
+```sh
+sudo apt-get install capnproto libcapnp-dev
+```
+
+If `/capnp/c++.capnp` cannot be found during `cargo build`, install the
+platform's Cap'n Proto development package in addition to the compiler.
 
 ## Minimum Standard Rust Version
 
