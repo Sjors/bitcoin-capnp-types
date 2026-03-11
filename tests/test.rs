@@ -2,9 +2,14 @@ use bitcoin_capnp_types::mining_capnp;
 
 #[path = "util/bitcoin_core.rs"]
 mod bitcoin_core_util;
+#[path = "util/bitcoin_core_wallet.rs"]
+mod bitcoin_core_wallet_util;
 
 use bitcoin_core_util::{
-    destroy_template, make_block_template, with_init_client, with_mining_client,
+    destroy_template, make_block_template, mempool_tx_count, with_init_client, with_mining_client,
+};
+use bitcoin_core_wallet_util::{
+    bitcoin_test_wallet, create_mempool_self_transfer, ensure_wallet_loaded_and_funded,
 };
 
 #[tokio::test]
@@ -275,4 +280,22 @@ async fn mining_check_block_and_interrupt() {
         mining.interrupt_request().send().promise.await.unwrap();
     })
     .await;
+}
+
+/// Minimal coverage for wallet/mempool helpers added for future mempool tests.
+#[tokio::test]
+#[serial_test::serial]
+async fn wallet_helpers_create_mempool_transaction() {
+    let wallet = bitcoin_test_wallet();
+    assert!(!wallet.is_empty(), "test wallet name must not be empty");
+
+    ensure_wallet_loaded_and_funded(&wallet);
+    let before = mempool_tx_count();
+    let _tx = create_mempool_self_transfer(&wallet);
+    let after = mempool_tx_count();
+    assert_eq!(
+        after,
+        before + 1,
+        "self-transfer should add one mempool transaction"
+    );
 }

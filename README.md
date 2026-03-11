@@ -40,7 +40,7 @@ The integration tests connect to a running bitcoin node via IPC.
 
 ```sh
 cd /path/to/bitcoin
-cmake -B build -DENABLE_WALLET=OFF -DBUILD_TESTS=OFF
+cmake -B build -DENABLE_WALLET=ON -DBUILD_TESTS=OFF
 cmake --build build -j$(nproc)
 ```
 
@@ -50,23 +50,20 @@ cmake --build build -j$(nproc)
 ./build/bin/bitcoin node -chain=regtest -ipcbind=unix -server -debug=ipc -daemon
 ```
 
-### 3. Generate blocks
+### 3. Run tests
 
-The mining tests require chain height > 16. At height <= 16, `createNewBlock`
-fails with `bad-cb-length` because the BIP34 height push is too short for the
-coinbase scriptSig minimum.
+If `bitcoin` is not in your `PATH`, set `BITCOIN_BIN` to the full path of
+the Bitcoin Core binary.
 
-```sh
-./build/bin/bitcoin rpc -chain=regtest -rpcwait generatetodescriptor 101 "raw(51)"
-```
-
-### 4. Run tests
+The test harness bootstraps regtest chain state and ensures the test wallet is
+available before running integration tests.
 
 ```sh
+BITCOIN_BIN=./build/bin/bitcoin \
 cargo test
 ```
 
-### 5. Stop bitcoin
+### 4. Stop bitcoin
 
 ```sh
 ./build/bin/bitcoin rpc -chain=regtest stop
