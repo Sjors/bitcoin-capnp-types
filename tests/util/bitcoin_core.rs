@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+};
 
 use bitcoin_capnp_types::{
     init_capnp::init,
@@ -8,6 +11,7 @@ use bitcoin_capnp_types::{
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp::Side, twoparty::VatNetwork};
 use futures::io::BufReader;
 use tokio::net::{UnixStream, unix::OwnedReadHalf};
+use tokio::task::LocalSet;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 pub fn unix_socket_path() -> PathBuf {
@@ -23,6 +27,33 @@ pub fn unix_socket_path() -> PathBuf {
     };
     let regtest_dir = bitcoin_dir.join("regtest");
     regtest_dir.join("node.sock")
+}
+
+pub async fn with_init_client<F, Fut>(f: F)
+where
+    F: FnOnce(init::Client, thread::Client) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let rpc_network = connect_unix_stream(unix_socket_path()).await;
+    let rpc_system = RpcSystem::new(Box::new(rpc_network), None);
+    LocalSet::new()
+        .run_until(async move {
+            let (client, thread) = bootstrap(rpc_system).await;
+            f(client, thread).await;
+        })
+        .await;
+}
+
+pub async fn with_mining_client<F, Fut>(f: F)
+where
+    F: FnOnce(init::Client, thread::Client, mining::Client) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    with_init_client(|client, thread| async move {
+        let mining = make_mining(&client, &thread).await;
+        f(client, thread, mining).await;
+    })
+    .await;
 }
 
 pub async fn connect_unix_stream(
