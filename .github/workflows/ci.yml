@@ -29,11 +29,11 @@ jobs:
       - name: Build Bitcoin Core
         run: |
           cd bitcoin
-          cmake -B build -DENABLE_WALLET=OFF -DBUILD_TESTS=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake -B build -DENABLE_WALLET=ON -DBUILD_TESTS=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build -j $(nproc)
       - name: Run Bitcoin Core Daemon
         run: cd bitcoin && ./build/bin/bitcoin node -chain=regtest -ipcbind=unix -server -debug=ipc -daemon
-      - name: Generate Blocks
-        run: cd bitcoin && ./build/bin/bitcoin rpc -regtest -rpcwait generatetodescriptor 101 "raw(51)"
       - name: Run Test Suite
+        env:
+          BITCOIN_BIN: ${{ github.workspace }}/bitcoin/build/bin/bitcoin
         run: cargo test
