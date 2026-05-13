@@ -13,13 +13,13 @@ rust-version = "1.85.0"
 
 [dependencies]
 capnp = "0.25.0"
+capnp-rpc = "0.25.0"
 
 [build-dependencies]
 capnpc = "0.25.0"
 
 [dev-dependencies]
 bitcoin-primitives = { git = "https://github.com/rust-bitcoin/rust-bitcoin", package = "bitcoin-primitives", tag = "bitcoin-0.33.0-beta" }
-capnp-rpc = "0.25.0"
 encoding = { git = "https://github.com/rust-bitcoin/rust-bitcoin", package = "bitcoin-consensus-encoding", tag = "bitcoin-0.33.0-beta" }
 futures = "0.3.0"
 serde = { version = "1", features = ["derive"] }
