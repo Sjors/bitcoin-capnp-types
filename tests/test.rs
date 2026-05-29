@@ -8,7 +8,6 @@ use util::bitcoin_core::{
 use util::bitcoin_core_wallet::{
     bitcoin_test_wallet, create_mempool_self_transfer, ensure_wallet_loaded_and_funded,
 };
-
 #[tokio::test]
 #[serial_test::parallel]
 async fn integration() {
