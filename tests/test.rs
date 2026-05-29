@@ -269,7 +269,7 @@ async fn mining_block_template_lifecycle() {
 /// submitSolution with a solved template block should be accepted.
 #[tokio::test]
 #[serial_test::serial]
-async fn mining_block_template_submit_solution_resolved() {
+async fn mining_block_template_submit_solution_resolved_and_duplicate() {
     with_mining_client(|_client, thread, mining| async move {
         let template = make_block_template(&mining, &thread).await;
 
@@ -290,6 +290,23 @@ async fn mining_block_template_submit_solution_resolved() {
         assert!(
             resp.get().unwrap().get_result(),
             "solved template solution must be accepted"
+        );
+
+        // A duplicate block currently returns true. bitcoin/bitcoin#34672 may
+        // change this to false, and this coverage should catch that change.
+        let mut req = template.submit_solution_request();
+        {
+            let mut params = req.get();
+            params.set_version(solution.version);
+            params.set_timestamp(solution.timestamp);
+            params.set_nonce(solution.nonce);
+            params.set_coinbase(&solution.coinbase);
+            params.get_context().unwrap().set_thread(thread.clone());
+        }
+        let resp = req.send().promise.await.unwrap();
+        assert!(
+            resp.get().unwrap().get_result(),
+            "duplicate template solution currently returns true"
         );
 
         destroy_template(&template, &thread).await;
