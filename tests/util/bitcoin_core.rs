@@ -4,7 +4,7 @@ use std::{
     sync::Once,
 };
 
-use crate::bitcoin_core_wallet_util::{
+use crate::util::bitcoin_core_wallet::{
     bitcoin_rpc_json, bitcoin_test_wallet, ensure_wallet_loaded, mine_blocks_to_new_address,
 };
 use bitcoin_capnp_types::{

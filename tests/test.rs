@@ -1,14 +1,11 @@
 use bitcoin_capnp_types::mining_capnp;
 
-#[path = "util/bitcoin_core.rs"]
-mod bitcoin_core_util;
-#[path = "util/bitcoin_core_wallet.rs"]
-mod bitcoin_core_wallet_util;
+mod util;
 
-use bitcoin_core_util::{
+use util::bitcoin_core::{
     destroy_template, make_block_template, mempool_tx_count, with_init_client, with_mining_client,
 };
-use bitcoin_core_wallet_util::{
+use util::bitcoin_core_wallet::{
     bitcoin_test_wallet, create_mempool_self_transfer, ensure_wallet_loaded_and_funded,
 };
 
