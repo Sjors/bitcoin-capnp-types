@@ -1,4 +1,4 @@
-use bitcoin_capnp_types::mining_capnp;
+use bitcoin_capnp_types::{mining_capnp, proxy_capnp::thread};
 
 mod util;
 
@@ -8,6 +8,17 @@ use util::bitcoin_core::{
 use util::bitcoin_core_wallet::{
     bitcoin_test_wallet, create_mempool_self_transfer, ensure_wallet_loaded_and_funded,
 };
+
+async fn get_template_block(
+    template: &mining_capnp::block_template::Client,
+    thread: &thread::Client,
+) -> Vec<u8> {
+    let mut req = template.get_block_request();
+    req.get().get_context().unwrap().set_thread(thread.clone());
+    let resp = req.send().promise.await.unwrap();
+    resp.get().unwrap().get_result().unwrap().to_vec()
+}
+
 #[tokio::test]
 #[serial_test::parallel]
 async fn integration() {
@@ -262,14 +273,7 @@ async fn mining_check_block_and_interrupt() {
     with_mining_client(|_client, thread, mining| async move {
         let template = make_block_template(&mining, &thread).await;
 
-        let mut get_block_req = template.get_block_request();
-        get_block_req
-            .get()
-            .get_context()
-            .unwrap()
-            .set_thread(thread.clone());
-        let get_block_resp = get_block_req.send().promise.await.unwrap();
-        let block = get_block_resp.get().unwrap().get_result().unwrap().to_vec();
+        let block = get_template_block(&template, &thread).await;
 
         // checkBlock should either error or return a response.
         let mut req = mining.check_block_request();
