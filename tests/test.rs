@@ -81,7 +81,10 @@ async fn mining_basic_queries() {
         let mut req = mining.is_initial_block_download_request();
         req.get().get_context().unwrap().set_thread(thread.clone());
         let resp = req.send().promise.await.unwrap();
-        let _ibd: bool = resp.get().unwrap().get_result();
+        let _ibd = resp
+            .get()
+            .expect("isInitialBlockDownload response should decode")
+            .get_result();
 
         // getTip
         let mut req = mining.get_tip_request();
@@ -151,13 +154,21 @@ async fn mining_block_template_inspection() {
         let mut req = template.get_tx_fees_request();
         req.get().get_context().unwrap().set_thread(thread.clone());
         let resp = req.send().promise.await.unwrap();
-        let _fees = resp.get().unwrap().get_result().unwrap();
+        let _fees = resp
+            .get()
+            .expect("getTxFees response should decode")
+            .get_result()
+            .expect("getTxFees response should contain fees");
 
         // getTxSigops
         let mut req = template.get_tx_sigops_request();
         req.get().get_context().unwrap().set_thread(thread.clone());
         let resp = req.send().promise.await.unwrap();
-        let _sigops = resp.get().unwrap().get_result().unwrap();
+        let _sigops = resp
+            .get()
+            .expect("getTxSigops response should decode")
+            .get_result()
+            .expect("getTxSigops response should contain sigops");
 
         // getCoinbaseTx — inspect every CoinbaseTx field
         let mut req = template.get_coinbase_tx_request();
@@ -171,17 +182,25 @@ async fn mining_block_template_inspection() {
             !script_sig_prefix.is_empty(),
             "scriptSigPrefix must contain at least the block height"
         );
-        let _witness = coinbase.get_witness().unwrap();
+        let _witness = coinbase
+            .get_witness()
+            .expect("coinbase witness should decode");
         let reward: i64 = coinbase.get_block_reward_remaining();
         assert!(reward > 0 && reward <= mining_capnp::MAX_MONEY);
-        let _required_outputs = coinbase.get_required_outputs().unwrap();
+        let _required_outputs = coinbase
+            .get_required_outputs()
+            .expect("coinbase required outputs should decode");
         let _lock_time: u32 = coinbase.get_lock_time();
 
         // getCoinbaseMerklePath
         let mut req = template.get_coinbase_merkle_path_request();
         req.get().get_context().unwrap().set_thread(thread.clone());
         let resp = req.send().promise.await.unwrap();
-        let _merkle_path = resp.get().unwrap().get_result().unwrap();
+        let _merkle_path = resp
+            .get()
+            .expect("getCoinbaseMerklePath response should decode")
+            .get_result()
+            .expect("getCoinbaseMerklePath response should contain a merkle path");
 
         destroy_template(&template, &thread).await;
     })
@@ -205,7 +224,11 @@ async fn mining_block_template_lifecycle() {
             opts.set_fee_threshold(mining_capnp::MAX_MONEY);
         }
         let resp = req.send().promise.await.unwrap();
-        let _has_next = resp.get().unwrap().has_result();
+        let results = resp.get().expect("waitNext response should decode");
+        assert!(
+            !results.has_result(),
+            "waitNext should time out without a new template"
+        );
 
         // interruptWait — should not crash.
         template
@@ -213,7 +236,7 @@ async fn mining_block_template_lifecycle() {
             .send()
             .promise
             .await
-            .unwrap();
+            .expect("interruptWait should not fail");
 
         // submitSolution — garbage coinbase should be rejected.
         // This mutates the template, so we do it right before destroy.
@@ -261,10 +284,14 @@ async fn mining_check_block_and_interrupt() {
         let result = req.send().promise.await;
         match result {
             Ok(resp) => {
-                let results = resp.get().unwrap();
-                let _valid: bool = results.get_result();
-                let _reason = results.get_reason().unwrap();
-                let _debug = results.get_debug().unwrap();
+                let results = resp.get().expect("checkBlock response should decode");
+                let _valid = results.get_result();
+                let _reason = results
+                    .get_reason()
+                    .expect("checkBlock response should contain reason");
+                let _debug = results
+                    .get_debug()
+                    .expect("checkBlock response should contain debug");
             }
             Err(_) => {
                 // Server may reject validation/deserialization.
@@ -274,7 +301,12 @@ async fn mining_check_block_and_interrupt() {
         destroy_template(&template, &thread).await;
 
         // interrupt — should not crash.
-        mining.interrupt_request().send().promise.await.unwrap();
+        mining
+            .interrupt_request()
+            .send()
+            .promise
+            .await
+            .expect("interrupt should not fail");
     })
     .await;
 }
