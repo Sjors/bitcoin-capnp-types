@@ -8,6 +8,7 @@ use util::bitcoin_core::{
 use util::bitcoin_core_wallet::{
     bitcoin_test_wallet, create_mempool_self_transfer, ensure_wallet_loaded_and_funded,
 };
+use util::block::{block_solution, block_with_pow};
 
 async fn get_template_block(
     template: &mining_capnp::block_template::Client,
@@ -259,6 +260,37 @@ async fn mining_block_template_lifecycle() {
         let resp = req.send().promise.await.unwrap();
         let submitted = resp.get().unwrap().get_result();
         assert!(!submitted, "garbage solution must not be accepted");
+
+        destroy_template(&template, &thread).await;
+    })
+    .await;
+}
+
+/// submitSolution with a solved template block should be accepted.
+#[tokio::test]
+#[serial_test::serial]
+async fn mining_block_template_submit_solution_resolved() {
+    with_mining_client(|_client, thread, mining| async move {
+        let template = make_block_template(&mining, &thread).await;
+
+        let block = get_template_block(&template, &thread).await;
+        let block = block_with_pow(&block, true);
+        let solution = block_solution(&block);
+
+        let mut req = template.submit_solution_request();
+        {
+            let mut params = req.get();
+            params.set_version(solution.version);
+            params.set_timestamp(solution.timestamp);
+            params.set_nonce(solution.nonce);
+            params.set_coinbase(&solution.coinbase);
+            params.get_context().unwrap().set_thread(thread.clone());
+        }
+        let resp = req.send().promise.await.unwrap();
+        assert!(
+            resp.get().unwrap().get_result(),
+            "solved template solution must be accepted"
+        );
 
         destroy_template(&template, &thread).await;
     })
