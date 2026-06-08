@@ -2,8 +2,10 @@ use bitcoin_capnp_types::{mining_capnp, proxy_capnp::thread};
 
 mod util;
 
+use serde_json::{Value, json};
 use util::bitcoin_core::{
     destroy_template, make_block_template, mempool_tx_count, with_init_client, with_mining_client,
+    with_rpc_client,
 };
 use util::bitcoin_core_wallet::{
     bitcoin_test_wallet, create_mempool_self_transfer, ensure_wallet_loaded_and_funded,
@@ -67,6 +69,41 @@ async fn integration() {
             .to_string()
             .unwrap();
         assert_eq!("Hello world", text);
+    })
+    .await;
+}
+
+/// Test the RPC interface by calling `uptime`
+#[tokio::test]
+#[serial_test::parallel]
+async fn rpc_query_uptime() {
+    with_rpc_client(|_client, thread, rpc| async move {
+        let mut execute_rpc_request = rpc.execute_rpc_request();
+        execute_rpc_request
+            .get()
+            .get_context()
+            .unwrap()
+            .set_thread(thread.clone());
+        let j: Value = json!({
+            "jsonrpc": "2.0",
+            "id": "test",
+            "method": "uptime",
+            "params": [],
+        });
+        execute_rpc_request.get().set_request(j.to_string());
+        let exec_rpc_response = execute_rpc_request.send().promise.await.unwrap();
+        let result = exec_rpc_response
+            .get()
+            .unwrap()
+            .get_result()
+            .unwrap()
+            .to_string()
+            .unwrap();
+        let v: Value = serde_json::from_str(&result)
+            .map_err(|e| format!("failed to parse rpc response as JSON: {e}"))
+            .unwrap();
+        let uptime = v["result"].as_i64().unwrap();
+        assert!(uptime > 0, "Uptime must be greater than zero");
     })
     .await;
 }
