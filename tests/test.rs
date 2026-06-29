@@ -10,7 +10,7 @@ use util::bitcoin_core_wallet::{
 };
 use util::block::{block_solution, block_with_pow};
 
-struct SubmitBlockOutcome {
+struct SubmitOutcome {
     accepted: bool,
     reason: String,
     debug: String,
@@ -20,13 +20,13 @@ async fn submit_block(
     mining: &mining_capnp::mining::Client,
     thread: &thread::Client,
     block: &[u8],
-) -> SubmitBlockOutcome {
+) -> SubmitOutcome {
     let mut req = mining.submit_block_request();
     req.get().get_context().unwrap().set_thread(thread.clone());
     req.get().set_block(block);
     let resp = req.send().promise.await.unwrap();
     let results = resp.get().unwrap();
-    SubmitBlockOutcome {
+    SubmitOutcome {
         accepted: results.get_result(),
         reason: results.get_reason().unwrap().to_string().unwrap(),
         debug: results.get_debug().unwrap().to_string().unwrap(),
@@ -37,7 +37,7 @@ async fn submit_solution(
     template: &mining_capnp::block_template::Client,
     thread: &thread::Client,
     solution: &util::block::BlockSolution,
-) -> bool {
+) -> SubmitOutcome {
     let mut req = template.submit_solution_request();
     {
         let mut params = req.get();
@@ -48,7 +48,12 @@ async fn submit_solution(
         params.get_context().unwrap().set_thread(thread.clone());
     }
     let resp = req.send().promise.await.unwrap();
-    resp.get().unwrap().get_result()
+    let results = resp.get().unwrap();
+    SubmitOutcome {
+        accepted: results.get_result(),
+        reason: results.get_reason().unwrap().to_string().unwrap(),
+        debug: results.get_debug().unwrap().to_string().unwrap(),
+    }
 }
 
 async fn get_template_block(
@@ -307,6 +312,30 @@ async fn mining_block_template_lifecycle() {
     .await;
 }
 
+/// submitSolution with insufficient PoW should return reason/debug details.
+#[tokio::test]
+#[serial_test::serial]
+async fn mining_block_template_submit_solution_insufficient_pow() {
+    with_mining_client(|_client, thread, mining| async move {
+        let template = make_block_template(&mining, &thread).await;
+
+        let block = get_template_block(&template, &thread).await;
+        let block = block_with_pow(&block, false);
+        let solution = block_solution(&block);
+
+        let outcome = submit_solution(&template, &thread, &solution).await;
+        assert!(
+            !outcome.accepted,
+            "solution with insufficient PoW must not be accepted"
+        );
+        assert_eq!(outcome.reason, "high-hash");
+        assert_eq!(outcome.debug, "proof of work failed");
+
+        destroy_template(&template, &thread).await;
+    })
+    .await;
+}
+
 /// submitSolution with a solved template block should be accepted.
 #[tokio::test]
 #[serial_test::serial]
@@ -318,17 +347,19 @@ async fn mining_block_template_submit_solution_resolved_and_duplicate() {
         let block = block_with_pow(&block, true);
         let solution = block_solution(&block);
 
+        let outcome = submit_solution(&template, &thread, &solution).await;
         assert!(
-            submit_solution(&template, &thread, &solution).await,
-            "solved template solution must be accepted"
+            outcome.accepted,
+            "solved template solution must be accepted: reason={}, debug={}",
+            outcome.reason, outcome.debug
         );
+        assert_eq!(outcome.reason, "");
+        assert_eq!(outcome.debug, "");
 
-        // A duplicate block currently returns true. bitcoin/bitcoin#34672 may
-        // change this to false, and this coverage should catch that change.
-        assert!(
-            submit_solution(&template, &thread, &solution).await,
-            "duplicate template solution currently returns true"
-        );
+        let outcome = submit_solution(&template, &thread, &solution).await;
+        assert!(!outcome.accepted, "duplicate solution must not be accepted");
+        assert_eq!(outcome.reason, "duplicate");
+        assert_eq!(outcome.debug, "");
 
         destroy_template(&template, &thread).await;
     })
