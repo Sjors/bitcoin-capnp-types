@@ -33,6 +33,24 @@ async fn submit_block(
     }
 }
 
+async fn submit_solution(
+    template: &mining_capnp::block_template::Client,
+    thread: &thread::Client,
+    solution: &util::block::BlockSolution,
+) -> bool {
+    let mut req = template.submit_solution_request();
+    {
+        let mut params = req.get();
+        params.set_version(solution.version);
+        params.set_timestamp(solution.timestamp);
+        params.set_nonce(solution.nonce);
+        params.set_coinbase(&solution.coinbase);
+        params.get_context().unwrap().set_thread(thread.clone());
+    }
+    let resp = req.send().promise.await.unwrap();
+    resp.get().unwrap().get_result()
+}
+
 async fn get_template_block(
     template: &mining_capnp::block_template::Client,
     thread: &thread::Client,
@@ -300,35 +318,15 @@ async fn mining_block_template_submit_solution_resolved_and_duplicate() {
         let block = block_with_pow(&block, true);
         let solution = block_solution(&block);
 
-        let mut req = template.submit_solution_request();
-        {
-            let mut params = req.get();
-            params.set_version(solution.version);
-            params.set_timestamp(solution.timestamp);
-            params.set_nonce(solution.nonce);
-            params.set_coinbase(&solution.coinbase);
-            params.get_context().unwrap().set_thread(thread.clone());
-        }
-        let resp = req.send().promise.await.unwrap();
         assert!(
-            resp.get().unwrap().get_result(),
+            submit_solution(&template, &thread, &solution).await,
             "solved template solution must be accepted"
         );
 
         // A duplicate block currently returns true. bitcoin/bitcoin#34672 may
         // change this to false, and this coverage should catch that change.
-        let mut req = template.submit_solution_request();
-        {
-            let mut params = req.get();
-            params.set_version(solution.version);
-            params.set_timestamp(solution.timestamp);
-            params.set_nonce(solution.nonce);
-            params.set_coinbase(&solution.coinbase);
-            params.get_context().unwrap().set_thread(thread.clone());
-        }
-        let resp = req.send().promise.await.unwrap();
         assert!(
-            resp.get().unwrap().get_result(),
+            submit_solution(&template, &thread, &solution).await,
             "duplicate template solution currently returns true"
         );
 
