@@ -116,10 +116,7 @@ pub fn create_mempool_self_transfer(wallet: &str) -> BitcoinTransaction {
     };
     let raw_tx_hex = bitcoin_rpc(None, &["getrawtransaction", txid_hex.as_str()])
         .unwrap_or_else(|e| panic!("failed to fetch raw transaction {txid_hex}: {e}"));
-    let raw_tx = hex::decode_to_vec(&raw_tx_hex)
-        .unwrap_or_else(|e| panic!("failed to decode raw transaction {txid_hex} from hex: {e}"));
-    let tx: BitcoinTransaction = decode_from_slice(&raw_tx)
-        .unwrap_or_else(|e| panic!("failed to deserialize raw transaction {txid_hex}: {e}"));
+    let tx = transaction_from_hex(&raw_tx_hex);
     let txid = tx.compute_txid();
     let txid_display = format!("{txid:x}");
     assert_eq!(
@@ -127,4 +124,11 @@ pub fn create_mempool_self_transfer(wallet: &str) -> BitcoinTransaction {
         "transaction id from raw tx should match RPC txid"
     );
     tx
+}
+
+fn transaction_from_hex(tx_hex: &str) -> BitcoinTransaction {
+    let raw_tx = hex::decode_to_vec(tx_hex)
+        .unwrap_or_else(|e| panic!("failed to decode raw transaction {tx_hex} from hex: {e}"));
+    decode_from_slice(&raw_tx)
+        .unwrap_or_else(|e| panic!("failed to deserialize raw transaction {tx_hex}: {e}"))
 }
