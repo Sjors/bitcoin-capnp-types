@@ -1,4 +1,4 @@
-use bitcoin_capnp_types::{mining_capnp, proxy_capnp::thread};
+use bitcoin_capnp_types::mining_capnp;
 use encoding::encode_to_vec;
 
 mod util;
@@ -19,13 +19,8 @@ struct SubmitOutcome {
     debug: String,
 }
 
-async fn submit_block(
-    mining: &mining_capnp::mining::Client,
-    thread: &thread::Client,
-    block: &[u8],
-) -> SubmitOutcome {
+async fn submit_block(mining: &mining_capnp::mining::Client, block: &[u8]) -> SubmitOutcome {
     let mut req = mining.submit_block_request();
-    req.get().get_context().unwrap().set_thread(thread.clone());
     req.get().set_block(block);
     let resp = req.send().promise.await.unwrap();
     let results = resp.get().unwrap();
@@ -38,7 +33,6 @@ async fn submit_block(
 
 async fn submit_solution(
     template: &mining_capnp::block_template::Client,
-    thread: &thread::Client,
     solution: &util::block::BlockSolution,
 ) -> SubmitOutcome {
     let mut req = template.submit_solution_request();
@@ -48,7 +42,6 @@ async fn submit_solution(
         params.set_timestamp(solution.timestamp);
         params.set_nonce(solution.nonce);
         params.set_coinbase(&solution.coinbase);
-        params.get_context().unwrap().set_thread(thread.clone());
     }
     let resp = req.send().promise.await.unwrap();
     let results = resp.get().unwrap();
@@ -59,30 +52,18 @@ async fn submit_solution(
     }
 }
 
-async fn get_template_block(
-    template: &mining_capnp::block_template::Client,
-    thread: &thread::Client,
-) -> Vec<u8> {
-    let mut req = template.get_block_request();
-    req.get().get_context().unwrap().set_thread(thread.clone());
-    let resp = req.send().promise.await.unwrap();
+async fn get_template_block(template: &mining_capnp::block_template::Client) -> Vec<u8> {
+    let resp = template.get_block_request().send().promise.await.unwrap();
     resp.get().unwrap().get_result().unwrap().to_vec()
 }
 
 #[tokio::test]
 #[serial_test::parallel]
 async fn integration() {
-    with_init_client(|client, thread| async move {
-        let mut echo = client.make_echo_request();
-        echo.get().get_context().unwrap().set_thread(thread.clone());
-        let echo_client_request = echo.send().promise.await.unwrap();
+    with_init_client(|client| async move {
+        let echo_client_request = client.make_echo_request().send().promise.await.unwrap();
         let echo_client = echo_client_request.get().unwrap().get_result().unwrap();
         let mut echo_conf = echo_client.echo_request();
-        echo_conf
-            .get()
-            .get_context()
-            .unwrap()
-            .set_thread(thread.clone());
         echo_conf.get().set_echo("Hello world");
         let echo_response = echo_conf.send().promise.await.unwrap();
         let text = echo_response
@@ -101,13 +82,8 @@ async fn integration() {
 #[tokio::test]
 #[serial_test::parallel]
 async fn rpc_query_uptime() {
-    with_rpc_client(|_client, thread, rpc| async move {
+    with_rpc_client(|_client, rpc| async move {
         let mut execute_rpc_request = rpc.execute_rpc_request();
-        execute_rpc_request
-            .get()
-            .get_context()
-            .unwrap()
-            .set_thread(thread.clone());
         let j: Value = json!({
             "jsonrpc": "2.0",
             "id": "test",
@@ -138,7 +114,7 @@ async fn rpc_query_uptime() {
 #[tokio::test]
 #[serial_test::parallel]
 async fn make_mining_old2_rejected() {
-    with_init_client(|client, _thread| async move {
+    with_init_client(|client| async move {
         let result = client.make_mining_old2_request().send().promise.await;
         assert!(
             result.is_err(),
@@ -165,26 +141,25 @@ fn mining_constants() {
 #[tokio::test]
 #[serial_test::parallel]
 async fn mining_basic_queries() {
-    with_mining_client(|_client, thread, mining| async move {
+    with_mining_client(|_client, mining| async move {
         // isTestChain
-        let mut req = mining.is_test_chain_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = mining.is_test_chain_request().send().promise.await.unwrap();
         assert!(resp.get().unwrap().get_result(), "regtest is a test chain");
 
         // isInitialBlockDownload
-        let mut req = mining.is_initial_block_download_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = mining
+            .is_initial_block_download_request()
+            .send()
+            .promise
+            .await
+            .unwrap();
         let _ibd = resp
             .get()
             .expect("isInitialBlockDownload response should decode")
             .get_result();
 
         // getTip
-        let mut req = mining.get_tip_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = mining.get_tip_request().send().promise.await.unwrap();
         let results = resp.get().unwrap();
         assert!(results.get_has_result(), "node should have a tip");
         let tip = results.get_result().unwrap();
@@ -200,11 +175,9 @@ async fn mining_basic_queries() {
 // Serialized because this assertion is sensitive to concurrent tip changes.
 #[serial_test::serial]
 async fn mining_wait_tip_changed() {
-    with_mining_client(|_client, thread, mining| async move {
+    with_mining_client(|_client, mining| async move {
         // Get the current tip first.
-        let mut req = mining.get_tip_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = mining.get_tip_request().send().promise.await.unwrap();
         let results = resp.get().unwrap();
         let tip = results.get_result().unwrap();
         let tip_hash: Vec<u8> = tip.get_hash().unwrap().to_vec();
@@ -212,7 +185,6 @@ async fn mining_wait_tip_changed() {
 
         // Wait with a short timeout; no new block should arrive.
         let mut req = mining.wait_tip_changed_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
         req.get().set_current_tip(&tip_hash);
         req.get().set_timeout(500.0); // 500 ms
         let resp = req.send().promise.await.unwrap();
@@ -228,27 +200,26 @@ async fn mining_wait_tip_changed() {
 #[tokio::test]
 #[serial_test::parallel]
 async fn mining_block_template_inspection() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
         // getBlockHeader
-        let mut req = template.get_block_header_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = template
+            .get_block_header_request()
+            .send()
+            .promise
+            .await
+            .unwrap();
         let header = resp.get().unwrap().get_result().unwrap();
         assert_eq!(header.len(), 80, "block header must be 80 bytes");
 
         // getBlock
-        let mut req = template.get_block_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = template.get_block_request().send().promise.await.unwrap();
         let block = resp.get().unwrap().get_result().unwrap();
         assert!(block.len() > 80, "serialized block must be > 80 bytes");
 
         // getTxFees
-        let mut req = template.get_tx_fees_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = template.get_tx_fees_request().send().promise.await.unwrap();
         let _fees = resp
             .get()
             .expect("getTxFees response should decode")
@@ -256,9 +227,12 @@ async fn mining_block_template_inspection() {
             .expect("getTxFees response should contain fees");
 
         // getTxSigops
-        let mut req = template.get_tx_sigops_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = template
+            .get_tx_sigops_request()
+            .send()
+            .promise
+            .await
+            .unwrap();
         let _sigops = resp
             .get()
             .expect("getTxSigops response should decode")
@@ -266,9 +240,12 @@ async fn mining_block_template_inspection() {
             .expect("getTxSigops response should contain sigops");
 
         // getCoinbaseTx — inspect every CoinbaseTx field
-        let mut req = template.get_coinbase_tx_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = template
+            .get_coinbase_tx_request()
+            .send()
+            .promise
+            .await
+            .unwrap();
         let coinbase = resp.get().unwrap().get_result().unwrap();
         let _version: u32 = coinbase.get_version();
         let _sequence: u32 = coinbase.get_sequence();
@@ -288,16 +265,19 @@ async fn mining_block_template_inspection() {
         let _lock_time: u32 = coinbase.get_lock_time();
 
         // getCoinbaseMerklePath
-        let mut req = template.get_coinbase_merkle_path_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
-        let resp = req.send().promise.await.unwrap();
+        let resp = template
+            .get_coinbase_merkle_path_request()
+            .send()
+            .promise
+            .await
+            .unwrap();
         let _merkle_path = resp
             .get()
             .expect("getCoinbaseMerklePath response should decode")
             .get_result()
             .expect("getCoinbaseMerklePath response should contain a merkle path");
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
     })
     .await;
 }
@@ -307,12 +287,11 @@ async fn mining_block_template_inspection() {
 // Serialized because submitSolution behavior depends on current chain tip.
 #[serial_test::serial]
 async fn mining_block_template_lifecycle() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
         // waitNext — short timeout, no new transactions expected.
         let mut req = template.wait_next_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
         {
             let mut opts = req.get().init_options();
             opts.set_timeout(100.0); // 100 ms
@@ -336,7 +315,6 @@ async fn mining_block_template_lifecycle() {
         // submitSolution — garbage coinbase should be rejected.
         // This mutates the template, so we do it right before destroy.
         let mut req = template.submit_solution_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
         req.get().set_version(1);
         req.get().set_timestamp(0);
         req.get().set_nonce(0);
@@ -345,7 +323,7 @@ async fn mining_block_template_lifecycle() {
         let submitted = resp.get().unwrap().get_result();
         assert!(!submitted, "garbage solution must not be accepted");
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
     })
     .await;
 }
@@ -354,14 +332,14 @@ async fn mining_block_template_lifecycle() {
 #[tokio::test]
 #[serial_test::serial]
 async fn mining_block_template_submit_solution_insufficient_pow() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
-        let block = get_template_block(&template, &thread).await;
+        let block = get_template_block(&template).await;
         let block = block_with_pow(&block, false);
         let solution = block_solution(&block);
 
-        let outcome = submit_solution(&template, &thread, &solution).await;
+        let outcome = submit_solution(&template, &solution).await;
         assert!(
             !outcome.accepted,
             "solution with insufficient PoW must not be accepted"
@@ -369,7 +347,7 @@ async fn mining_block_template_submit_solution_insufficient_pow() {
         assert_eq!(outcome.reason, "high-hash");
         assert_eq!(outcome.debug, "proof of work failed");
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
     })
     .await;
 }
@@ -378,14 +356,14 @@ async fn mining_block_template_submit_solution_insufficient_pow() {
 #[tokio::test]
 #[serial_test::serial]
 async fn mining_block_template_submit_solution_resolved_and_duplicate() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
-        let block = get_template_block(&template, &thread).await;
+        let block = get_template_block(&template).await;
         let block = block_with_pow(&block, true);
         let solution = block_solution(&block);
 
-        let outcome = submit_solution(&template, &thread, &solution).await;
+        let outcome = submit_solution(&template, &solution).await;
         assert!(
             outcome.accepted,
             "solved template solution must be accepted: reason={}, debug={}",
@@ -394,12 +372,12 @@ async fn mining_block_template_submit_solution_resolved_and_duplicate() {
         assert_eq!(outcome.reason, "");
         assert_eq!(outcome.debug, "");
 
-        let outcome = submit_solution(&template, &thread, &solution).await;
+        let outcome = submit_solution(&template, &solution).await;
         assert!(!outcome.accepted, "duplicate solution must not be accepted");
         assert_eq!(outcome.reason, "duplicate");
         assert_eq!(outcome.debug, "");
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
     })
     .await;
 }
@@ -408,13 +386,13 @@ async fn mining_block_template_submit_solution_resolved_and_duplicate() {
 #[tokio::test]
 #[serial_test::serial]
 async fn mining_submit_block_insufficient_pow() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
-        let block = get_template_block(&template, &thread).await;
+        let block = get_template_block(&template).await;
         let block = block_with_pow(&block, false);
 
-        let outcome = submit_block(&mining, &thread, &block).await;
+        let outcome = submit_block(&mining, &block).await;
         assert!(
             !outcome.accepted,
             "block with insufficient PoW must not be accepted"
@@ -422,7 +400,7 @@ async fn mining_submit_block_insufficient_pow() {
         assert_eq!(outcome.reason, "high-hash");
         assert_eq!(outcome.debug, "proof of work failed");
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
     })
     .await;
 }
@@ -431,10 +409,10 @@ async fn mining_submit_block_insufficient_pow() {
 #[tokio::test]
 #[serial_test::serial]
 async fn mining_submit_block_invalid() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
-        let block = get_template_block(&template, &thread).await;
+        let block = get_template_block(&template).await;
         let mut block = block_with_pow(&block, true);
         // Corrupt the serialized block after solving its header. This keeps
         // the PoW valid while making the header's Merkle root stale.
@@ -442,7 +420,7 @@ async fn mining_submit_block_invalid() {
             .last_mut()
             .expect("serialized block must not be empty") ^= 1;
 
-        let outcome = submit_block(&mining, &thread, &block).await;
+        let outcome = submit_block(&mining, &block).await;
         assert!(
             !outcome.accepted,
             "invalid block with sufficient PoW must not be accepted"
@@ -450,7 +428,7 @@ async fn mining_submit_block_invalid() {
         assert_eq!(outcome.reason, "bad-txnmrklroot");
         assert_eq!(outcome.debug, "hashMerkleRoot mismatch");
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
     })
     .await;
 }
@@ -459,13 +437,13 @@ async fn mining_submit_block_invalid() {
 #[tokio::test]
 #[serial_test::serial]
 async fn mining_submit_block_resolved() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
-        let block = get_template_block(&template, &thread).await;
+        let block = get_template_block(&template).await;
         let block = block_with_pow(&block, true);
 
-        let outcome = submit_block(&mining, &thread, &block).await;
+        let outcome = submit_block(&mining, &block).await;
         assert!(
             outcome.accepted,
             "solved template block must be accepted: reason={}, debug={}",
@@ -474,7 +452,7 @@ async fn mining_submit_block_resolved() {
         assert_eq!(outcome.reason, "");
         assert_eq!(outcome.debug, "");
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
     })
     .await;
 }
@@ -483,13 +461,13 @@ async fn mining_submit_block_resolved() {
 #[tokio::test]
 #[serial_test::serial]
 async fn mining_submit_block_duplicate() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
-        let block = get_template_block(&template, &thread).await;
+        let block = get_template_block(&template).await;
         let block = block_with_pow(&block, true);
 
-        let outcome = submit_block(&mining, &thread, &block).await;
+        let outcome = submit_block(&mining, &block).await;
         assert!(
             outcome.accepted,
             "first solved block submission must be accepted: reason={}, debug={}",
@@ -498,12 +476,12 @@ async fn mining_submit_block_duplicate() {
         assert_eq!(outcome.reason, "");
         assert_eq!(outcome.debug, "");
 
-        let outcome = submit_block(&mining, &thread, &block).await;
+        let outcome = submit_block(&mining, &block).await;
         assert!(!outcome.accepted, "duplicate block must not be accepted");
         assert_eq!(outcome.reason, "duplicate");
         assert_eq!(outcome.debug, "");
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
     })
     .await;
 }
@@ -514,7 +492,7 @@ async fn mining_submit_block_duplicate() {
 // Serialized because this test may mine blocks to recover wallet funding.
 #[serial_test::serial]
 async fn mining_get_transactions() {
-    with_mining_client(|_client, thread, mining| async move {
+    with_mining_client(|_client, mining| async move {
         let wallet = bitcoin_test_wallet();
         ensure_wallet_loaded_and_funded(&wallet);
 
@@ -525,7 +503,6 @@ async fn mining_get_transactions() {
 
         // getTransactionsByTxID — empty list should return empty list.
         let mut req = mining.get_transactions_by_tx_i_d_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
         req.get().init_txids(0);
         let resp = req.send().promise.await.unwrap();
         let results = resp.get().unwrap().get_result().unwrap();
@@ -538,7 +515,6 @@ async fn mining_get_transactions() {
         // getTransactionsByTxID — return real mempool tx and empty for unknown id.
         let fake_txid = [0x42u8; 32];
         let mut req = mining.get_transactions_by_tx_i_d_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
         {
             let mut txids = req.get().init_txids(2);
             txids.set(0, &real_txid);
@@ -563,7 +539,6 @@ async fn mining_get_transactions() {
 
         // getTransactionsByWitnessID — empty list should return empty list.
         let mut req = mining.get_transactions_by_witness_i_d_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
         req.get().init_wtxids(0);
         let resp = req.send().promise.await.unwrap();
         let results = resp.get().unwrap().get_result().unwrap();
@@ -576,7 +551,6 @@ async fn mining_get_transactions() {
         // getTransactionsByWitnessID — return real mempool tx and empty for unknown id.
         let fake_wtxid = [0x43u8; 32];
         let mut req = mining.get_transactions_by_witness_i_d_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
         {
             let mut wtxids = req.get().init_wtxids(2);
             wtxids.set(0, &real_wtxid);
@@ -607,14 +581,13 @@ async fn mining_get_transactions() {
 // Serialized because interrupt() can affect other in-flight mining waits.
 #[serial_test::serial]
 async fn mining_check_block_and_interrupt() {
-    with_mining_client(|_client, thread, mining| async move {
-        let template = make_block_template(&mining, &thread).await;
+    with_mining_client(|_client, mining| async move {
+        let template = make_block_template(&mining).await;
 
-        let block = get_template_block(&template, &thread).await;
+        let block = get_template_block(&template).await;
 
         // checkBlock should either error or return a response.
         let mut req = mining.check_block_request();
-        req.get().get_context().unwrap().set_thread(thread.clone());
         req.get().set_block(&block);
         {
             let mut opts = req.get().init_options();
@@ -638,7 +611,7 @@ async fn mining_check_block_and_interrupt() {
             }
         }
 
-        destroy_template(&template, &thread).await;
+        destroy_template(&template).await;
 
         // interrupt — should not crash.
         mining
