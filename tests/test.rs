@@ -1,12 +1,18 @@
-use bitcoin_capnp_types::mining_capnp;
+use bitcoin_capnp_types::{
+    init_capnp::init,
+    mining_capnp,
+    proxy_capnp::{thread, thread_map},
+};
+use capnp_rpc::{RpcSystem, rpc_twoparty_capnp::Side};
 use encoding::encode_to_vec;
+use tokio::task::LocalSet;
 
 mod util;
 
 use serde_json::{Value, json};
 use util::bitcoin_core::{
-    destroy_template, make_block_template, mempool_tx_count, with_init_client, with_mining_client,
-    with_rpc_client,
+    connect_unix_stream, destroy_template, make_block_template, mempool_tx_count, unix_socket_path,
+    with_init_client, with_mining_client, with_rpc_client,
 };
 use util::bitcoin_core_wallet::{
     bitcoin_test_wallet, create_mempool_self_transfer, ensure_wallet_loaded_and_funded,
@@ -622,6 +628,59 @@ async fn mining_check_block_and_interrupt() {
             .expect("interrupt should not fail");
     })
     .await;
+}
+
+/// Exercise the `context.thread` dispatch path. Clients may want to use this if they know a call
+/// will block for a long time, potentially indefinitely.
+#[tokio::test]
+#[serial_test::parallel]
+async fn echo_with_explicit_thread() {
+    let rpc_network = connect_unix_stream(unix_socket_path()).await;
+    let mut rpc_system = RpcSystem::new(Box::new(rpc_network), None);
+    LocalSet::new()
+        .run_until(async move {
+            let client: init::Client = rpc_system.bootstrap(Side::Server);
+            tokio::task::spawn_local(rpc_system);
+
+            let construct_resp = client
+                .construct_request()
+                .send()
+                .promise
+                .await
+                .expect("could not create initial request");
+            let thread_map: thread_map::Client =
+                construct_resp.get().unwrap().get_thread_map().unwrap();
+            let thread_resp = thread_map
+                .make_thread_request()
+                .send()
+                .promise
+                .await
+                .unwrap();
+            let thread: thread::Client = thread_resp.get().unwrap().get_result().unwrap();
+
+            let mut make_echo = client.make_echo_request();
+            make_echo
+                .get()
+                .get_context()
+                .unwrap()
+                .set_thread(thread.clone());
+            let echo_resp = make_echo.send().promise.await.unwrap();
+            let echo = echo_resp.get().unwrap().get_result().unwrap();
+
+            let mut req = echo.echo_request();
+            req.get().get_context().unwrap().set_thread(thread.clone());
+            req.get().set_echo("thread-dispatched");
+            let resp = req.send().promise.await.unwrap();
+            let text = resp
+                .get()
+                .unwrap()
+                .get_result()
+                .unwrap()
+                .to_string()
+                .unwrap();
+            assert_eq!("thread-dispatched", text);
+        })
+        .await;
 }
 
 /// Minimal coverage for wallet/mempool helpers added for future mempool tests.
