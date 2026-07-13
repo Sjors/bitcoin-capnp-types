@@ -9,7 +9,8 @@ use util::bitcoin_core::{
     with_rpc_client,
 };
 use util::bitcoin_core_wallet::{
-    bitcoin_test_wallet, create_mempool_self_transfer, ensure_wallet_loaded_and_funded,
+    bitcoin_rpc, bitcoin_rpc_json, bitcoin_test_wallet, create_mempool_self_transfer,
+    ensure_wallet_loaded_and_funded,
 };
 use util::block::{block_solution, block_with_pow};
 
@@ -168,6 +169,83 @@ async fn mining_basic_queries() {
         let tip_hash = tip.get_hash().unwrap();
         assert_eq!(tip_hash.len(), 32, "block hash must be 32 bytes");
         assert!(tip.get_height() >= 0, "height must be non-negative");
+    })
+    .await;
+}
+
+/// getInfo fields match the corresponding mining and block template RPC data.
+#[tokio::test]
+#[serial_test::serial]
+async fn mining_get_info() {
+    with_mining_client(|_client, thread, mining| async move {
+        let chain_info: Value = bitcoin_rpc_json(None, &["getblockchaininfo"])
+            .expect("getblockchaininfo should succeed");
+        let mock_time = chain_info["time"]
+            .as_i64()
+            .expect("chain tip time should be an integer")
+            + 1;
+        let mock_time_arg = mock_time.to_string();
+        bitcoin_rpc(None, &["setmocktime", &mock_time_arg]).expect("setmocktime should succeed");
+
+        let rpc_info: Value =
+            bitcoin_rpc_json(None, &["getmininginfo"]).expect("getmininginfo should succeed");
+        let block_template: Value =
+            bitcoin_rpc_json(None, &["getblocktemplate", r#"{"rules":["segwit"]}"#])
+                .expect("getblocktemplate should succeed");
+
+        let mut req = mining.get_info_request();
+        req.get().get_context().unwrap().set_thread(thread.clone());
+        let resp = req.send().promise.await.unwrap();
+        let results = resp.get().expect("getInfo response should decode");
+        assert!(results.get_has_result(), "node should return mining info");
+        let info = results.get_result().expect("mining info should decode");
+        let bits = info.get_bits();
+        let min_time = info.get_min_time();
+        let time = info.get_time();
+        let tip = info.get_tip().expect("mining info tip should decode");
+        let tip_height = tip.get_height();
+        let tip_hash = tip
+            .get_hash()
+            .expect("mining info tip hash should decode")
+            .to_vec();
+
+        bitcoin_rpc(None, &["setmocktime", "0"]).expect("resetting mock time should succeed");
+
+        assert_eq!(
+            i64::from(tip_height) + 1,
+            rpc_info["next"]["height"]
+                .as_i64()
+                .expect("next block height should be an integer")
+        );
+        let tip_hash_hex = tip_hash
+            .iter()
+            .rev()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            tip_hash_hex,
+            block_template["previousblockhash"]
+                .as_str()
+                .expect("previous block hash should be a string")
+        );
+        assert_eq!(
+            format!("{bits:08x}"),
+            rpc_info["next"]["bits"]
+                .as_str()
+                .expect("next block bits should be a string")
+        );
+        assert_eq!(
+            min_time,
+            block_template["mintime"]
+                .as_i64()
+                .expect("minimum block time should be an integer")
+        );
+        assert_eq!(
+            time,
+            block_template["curtime"]
+                .as_i64()
+                .expect("current block time should be an integer")
+        );
     })
     .await;
 }
