@@ -9,7 +9,7 @@ fn bitcoin_bin() -> String {
     std::env::var("BITCOIN_BIN").unwrap_or_else(|_| "bitcoin".to_owned())
 }
 
-fn bitcoin_rpc(wallet: Option<&str>, args: &[&str]) -> Result<String, String> {
+pub fn bitcoin_rpc(wallet: Option<&str>, args: &[&str]) -> Result<String, String> {
     let owned_args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
     bitcoin_rpc_owned(wallet, &owned_args)
 }
