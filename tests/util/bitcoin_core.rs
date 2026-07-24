@@ -10,7 +10,7 @@ use crate::util::bitcoin_core_wallet::{
 use bitcoin_capnp_types::{
     init_capnp::init,
     mining_capnp::{block_template, mining},
-    proxy_capnp::{thread, thread_map},
+    proxy_capnp::thread_map,
     rpc_capnp::rpc,
 };
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp::Side, twoparty::VatNetwork};
@@ -64,39 +64,39 @@ fn ensure_chain_height_at_least(min_height: u32, wallet: &str) {
 
 pub async fn with_init_client<F, Fut>(f: F)
 where
-    F: FnOnce(init::Client, thread::Client) -> Fut,
+    F: FnOnce(init::Client) -> Fut,
     Fut: Future<Output = ()>,
 {
     let rpc_network = connect_unix_stream(unix_socket_path()).await;
     let rpc_system = RpcSystem::new(Box::new(rpc_network), None);
     LocalSet::new()
         .run_until(async move {
-            let (client, thread) = bootstrap(rpc_system).await;
-            f(client, thread).await;
+            let client = bootstrap(rpc_system).await;
+            f(client).await;
         })
         .await;
 }
 
 pub async fn with_mining_client<F, Fut>(f: F)
 where
-    F: FnOnce(init::Client, thread::Client, mining::Client) -> Fut,
+    F: FnOnce(init::Client, mining::Client) -> Fut,
     Fut: Future<Output = ()>,
 {
-    with_init_client(|client, thread| async move {
-        let mining = make_mining(&client, &thread).await;
-        f(client, thread, mining).await;
+    with_init_client(|client| async move {
+        let mining = make_mining(&client).await;
+        f(client, mining).await;
     })
     .await;
 }
 
 pub async fn with_rpc_client<F, Fut>(f: F)
 where
-    F: FnOnce(init::Client, thread::Client, rpc::Client) -> Fut,
+    F: FnOnce(init::Client, rpc::Client) -> Fut,
     Fut: Future<Output = ()>,
 {
-    with_init_client(|client, thread| async move {
-        let rpc = make_rpc(&client, &thread).await;
-        f(client, thread, rpc).await;
+    with_init_client(|client| async move {
+        let rpc = make_rpc(&client).await;
+        f(client, rpc).await;
     })
     .await;
 }
@@ -127,10 +127,12 @@ pub async fn connect_unix_stream(
     );
 }
 
-/// Bootstrap an Init client, spawn the RPC system, and create a thread handle.
+/// Bootstrap an Init client, spawn the RPC system, and pre-allocate a server
+/// thread pool. Requests sent without `context.thread` set will be dispatched
+/// through this pool via a shared work queue.
 pub async fn bootstrap(
     mut rpc_system: RpcSystem<capnp_rpc::rpc_twoparty_capnp::Side>,
-) -> (init::Client, thread::Client) {
+) -> init::Client {
     ensure_bootstrap_chain_ready();
 
     let client: init::Client = rpc_system.bootstrap(Side::Server);
@@ -146,29 +148,21 @@ pub async fn bootstrap(
         .unwrap()
         .get_thread_map()
         .unwrap();
-    let thread_reponse = thread_map
-        .make_thread_request()
-        .send()
-        .promise
-        .await
-        .unwrap();
-    let thread: thread::Client = thread_reponse.get().unwrap().get_result().unwrap();
-    (client, thread)
+    let mut pool_req = thread_map.make_pool_request();
+    pool_req.get().set_count(4);
+    pool_req.send().promise.await.unwrap();
+    client
 }
 
 /// Obtain a Mining client from an Init client.
-pub async fn make_mining(init: &init::Client, thread: &thread::Client) -> mining::Client {
-    let mut req = init.make_mining_request();
-    req.get().get_context().unwrap().set_thread(thread.clone());
-    let resp = req.send().promise.await.unwrap();
+pub async fn make_mining(init: &init::Client) -> mining::Client {
+    let resp = init.make_mining_request().send().promise.await.unwrap();
     resp.get().unwrap().get_result().unwrap()
 }
 
 /// Obtain a Rpc client from an Init client.
-pub async fn make_rpc(init: &init::Client, thread: &thread::Client) -> rpc::Client {
-    let mut req = init.make_rpc_request();
-    req.get().get_context().unwrap().set_thread(thread.clone());
-    let resp = req.send().promise.await.unwrap();
+pub async fn make_rpc(init: &init::Client) -> rpc::Client {
+    let resp = init.make_rpc_request().send().promise.await.unwrap();
     resp.get().unwrap().get_result().unwrap()
 }
 
@@ -179,22 +173,16 @@ pub async fn make_rpc(init: &init::Client, thread: &thread::Client) -> rpc::Clie
 /// required by consensus (see `CheckTransaction`), causing `createNewBlock`
 /// to fail with `bad-cb-length`. `bootstrap()` ensures chain height is at
 /// least 101 before tests run, which satisfies this precondition.
-pub async fn make_block_template(
-    mining: &mining::Client,
-    thread: &thread::Client,
-) -> block_template::Client {
+pub async fn make_block_template(mining: &mining::Client) -> block_template::Client {
     let mut req = mining.create_new_block_request();
-    req.get().get_context().unwrap().set_thread(thread.clone());
     req.get().set_cooldown(false);
     let resp = req.send().promise.await.unwrap();
     resp.get().unwrap().get_result().unwrap()
 }
 
 /// Destroy a block template.
-pub async fn destroy_template(template: &block_template::Client, thread: &thread::Client) {
-    let mut req = template.destroy_request();
-    req.get().get_context().unwrap().set_thread(thread.clone());
-    req.send().promise.await.unwrap();
+pub async fn destroy_template(template: &block_template::Client) {
+    template.destroy_request().send().promise.await.unwrap();
 }
 
 #[derive(Deserialize)]
